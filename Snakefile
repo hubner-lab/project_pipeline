@@ -12,6 +12,8 @@ rule trim:
 		expand("{folder}/data/{file}.fastq.gz",folder = config["folder"],file = config["files"]),
 	output:
 		expand("trimmed/{file}.fastq.gz",file = config["files"]),
+
+	threads: workflow.cores * config["cores_per"] 
 	#message: ""
 	shell:
 		"""
@@ -23,7 +25,7 @@ rule map:
 		fasta=config["fasta"]
 	output:
 		"mapping/sorted.bam"
-	threads: 50	
+	threads: workflow.cores * config["cores_per"] 
 	#message: ""
 	shell:
 		"""
@@ -34,6 +36,7 @@ rule index:
 		"mapping/{samples}.bam"
 	output:
 		"mapping/{samples}.bam.bai"
+	threads: workflow.cores * config["cores_per"] 
 	#message: ""
 	shell:
 		"""
@@ -49,6 +52,7 @@ rule mark_duplicates:
 	output:
 		bam="mapping/sorted.MarkedDup.bam",
 		txt="mapping/marked_dup_metrics.txt"
+	threads: workflow.cores * config["cores_per"] 
 	#message: ""
 	shell:
 		# java -Xmx50G -jar {params.gatk} MarkDuplicatesSpark --spark-master local[{threads}]  -I {params.bam} -O {output.bam} -M {output.txt} 
@@ -64,13 +68,14 @@ rule haplotypecaller:
 		gatk="/mnt/data/tools/gatk-4.1.0.0/gatk-package-4.1.0.0-local.jar"
 	output:
 		"VCF/ERR753110.vcf"
+	threads: workflow.cores * config["cores_per"] 
 	#message: ""
 	shell:
 		# java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
 		""" 
 			java -Xmx50G -jar {params.gatk} HaplotypeCaller -R {input.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
 		"""
-rule done:
+rule splitGVCF:
 	input:
 		bed=config["bed"],
 		id_list=config["id"],
@@ -81,7 +86,8 @@ rule done:
 	params:
 		splits=30000,
 
-	threads:50
+	threads: workflow.cores * config["cores_per"] 
+
 	shell:
 		"""
 			bash SplitGVCF.v3.sh {params.splits} {input.bed} {input.id_list} {input.vcf_folder} {output} {threads} {input.ref}	
