@@ -1,6 +1,6 @@
 {
-	"folder":"/mnt/data/barA/analysis",
-	"files":["ERR753110_1","ERR753110_2"],
+	"folder":"/mnt/data/Barley/FASTQ",
+	"samples":["1st30","April-2ndBatch","June-3rdBatch"],
 	"fasta":"/mnt/data/Barley/FullNewGenome-1Dec-2019/Barley_Morex_V2_pseudomolecules.fasta",
-	"cores_per":0.7
+	"cores_per":0.85
 }

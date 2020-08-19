@@ -1,43 +1,67 @@
+import glob 
+import re
+
 configfile: "config.json"
 
 # from snakemake.remote.S3 import RemoteProvider as S3RemoteProvider
 # S3 = S3RemoteProvider(access_key_id="", secret_access_key="")
 
+#TODO add resources 
+def split_f(string):
+	return '/'.join(map(str,string.split('/')[-2:]))[:-9];
+
+files=glob.glob("{}/*/*.fastq.gz".format(config["folder"]))
+files=list(map(split_f,files))
+
+
 rule all:
 	input:
-		expand("{folder}/data/{file}.fastq.gz",folder = config["folder"],file = config["files"]),
-		config["fasta"],
+		expand("VCF/{files}.g.vcf",files=files)
+
+#TODO fix rule all input is acausally output
+
 rule trim:
 	input:
-		expand("{folder}/data/{file}.fastq.gz",folder = config["folder"],file = config["files"]),
+		expand("{folder}/{{samples}}/{{file}}.fastq.gz",folder = config["folder"]),
 	output:
-		expand("trimmed/{file}.fastq.gz",file = config["files"]),
-
-	threads: workflow.cores * config["cores_per"] 
-	#message: ""
+		"trimmed/{samples}/{file}.fastq.gz"
+	threads: 
+		workflow.cores * config["cores_per"] 
+	message: 
+		"trimming {wildcards.samples}/{wildcards.file}"
 	shell:
 		"""
-			fastp --detect_adapter_for_pe --overrepresentation_analysis --correction -i {input[0]} -I {input[1]} -o {output[0]} -O {output[1]}
+			fastp --detect_adapter_for_pe --overrepresentation_analysis -i {input} -o {output} 
 		"""
+
+#fastp --detect_adapter_for_pe --overrepresentation_analysis --correction -i {input[0]} -I {input[1]} -o {output[0]} -O {output[1]}
+
 rule map:
 	input:
-		files=expand("trimmed/{file}.fastq.gz",file = config["files"]),
-		fasta=config["fasta"]
+		files="trimmed/{samples}/{file}.fastq.gz",
+		fasta=config["fasta"],
 	output:
-		"mapping/sorted.bam"
-	threads: workflow.cores * config["cores_per"] 
-	#message: ""
+		"mapping/{samples}/{file}.bam"
+	threads: 
+		workflow.cores * config["cores_per"] 
+	message: 
+		"mapping {wildcards.file}.fastq.gz to bam"
 	shell:
 		"""
-			bwa mem -t {threads} -R '@RG\\tID:ERR753110\\tSM:ERR753110\\tPL:ILLUMINA' {input.fasta} {input.files} | samtools sort -@ {threads} --reference {input.fasta} -o {output}
+			bwa mem -t {threads} -R "$(bash RG.sh {input.files})" {input.fasta} {input.files} | samtools sort -@ {threads} --reference {input.fasta} -o {output}
 		"""
+
+#TODO change to correct sample name in @RG -- done
+
 rule index:
 	input:
-		"mapping/{samples}.bam"
+		"mapping/{samples}/{file}.bam"
 	output:
-		"mapping/{samples}.bam.bai"
-	threads: workflow.cores * config["cores_per"] 
-	#message: ""
+		"mapping/{samples}/{file}.bam.bai"
+	threads: 
+		workflow.cores * config["cores_per"] 
+	message: 
+		"indexing {wildcards.file}.bam"	
 	shell:
 		"""
 			samtools.0.1.19 index {input}
@@ -45,59 +69,88 @@ rule index:
 
 rule mark_duplicates:
 	input:
-		bam="mapping/sorted.bam",
-		index_bam="mapping/sorted.bam.bai"
+		bam="mapping/{samples}/{file}.bam",
+		index_bam="mapping/{samples}/{file}.bam.bai"
 	params:
 		gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar"
 	output:
-		bam="mapping/sorted.MarkedDup.bam",
-		txt="mapping/marked_dup_metrics.txt"
-	threads: workflow.cores * config["cores_per"] 
-	#message: ""
+		bam="mapping/{samples}/{file}.MarkedDup.bam",
+		txt="mapping/{samples}/{file}-marked_dup_metrics.txt"
+	threads: 
+		workflow.cores * config["cores_per"] 
+	message: 
+		"MarkDuplicates {wildcards.file}"
 	shell:
 		# java -Xmx50G -jar {params.gatk} MarkDuplicatesSpark --spark-master local[{threads}]  -I {params.bam} -O {output.bam} -M {output.txt} 
 		"""
 			java -Xmx50G -jar {params.gatk} MarkDuplicates -I {input.bam} -O {output.bam} -M {output.txt} -VALIDATION_STRINGENCY SILENT
 		"""
+
 rule haplotypecaller:
 	input:
-		MarkDup="mapping/sorted.MarkedDup.bam",
-		MarkDupIndex="mapping/sorted.MarkedDup.bam.bai",
+		MarkDup="mapping/{samples}/{file}.MarkedDup.bam",
+		MarkDupIndex="mapping/{samples}/{file}.MarkedDup.bam.bai",
 		fasta=config["fasta"]
 	params:
 		gatk="/mnt/data/tools/gatk-4.1.0.0/gatk-package-4.1.0.0-local.jar"
 	output:
-		"VCF/ERR753110.vcf"
-	threads: workflow.cores * config["cores_per"] 
-	#message: ""
+		"VCF/{samples}/{file}.g.vcf"
+	threads: 
+		workflow.cores * config["cores_per"] 
+	message:
+		"running HaplotypeCaller on {input.fasta}"
 	shell:
 		# java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
 		""" 
-			java -Xmx50G -jar {params.gatk} HaplotypeCaller -R {input.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
+			java -Xmx50G -jar {params.gatk} HaplotypeCaller -R {input.fasta} -I {input.MarkDup} -O {output} -ERC GVCF
 		"""
-rule splitGVCF:
-	input:
-		bed=config["bed"],
-		id_list=config["id"],
-		vcf_folder=config["vcf_path"],
-		ref=config["fasta_ref"],
-	output:
-		config["output_path"],	
-	params:
-		splits=30000,
+#-L chr6H 
+# adjust the heterozygosity parameter  -- to ????? 
 
-	threads: workflow.cores * config["cores_per"] 
+#rule GenomicsDBImport:
+	#input:
+	#output:
+		#path="",
+		#name_map="",
+	#params:
+		#gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar"
+	#threads: 
+		#workflow.cores * config["cores_per"] 
+	##message: ""
+	#shell:
+		#""" 
+			#java -Xmx50G -jar {params.gatk} GenomicsDBImport --genomicsdb-workspace-path {output.path} --samples-name-map {output.name_map}
+		#"""
 
-	shell:
-		"""
-			bash SplitGVCF.v3.sh {params.splits} {input.bed} {input.id_list} {input.vcf_folder} {output} {threads} {input.ref}	
-		"""
+#rule GenotypeGVCFs:
+	#input:
 
-# N=$1		# number of splits 
-#BED=$2		# path to BED file with start and end coordinates for each contig
-#ID=$3		# path to sample id list
-#In=$4		# path to input g.vcf.gz folder, including idx files. (index)
-#O=$5		# path to output folder
-#Tr=$6		# number of threads to use
-#Ref=$7		# path to reference fasta
+	#output:
 
+	#params:
+		#gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar"
+	#threads: 
+		#workflow.cores * config["cores_per"] 
+	#shell:
+		#""" 
+			#java -Xmx50G -jar {params.gatk} GenotypeGVCFs -R {input.ref} -V gendb://{input.??} -G StandardAnnotation -O {output} 
+		#"""
+
+
+#rule splitGVCF:
+	#input:
+		#bed=config["bed"],
+		#id_list=config["id"],
+		#vcf_folder=config["vcf_path"],
+		#ref=config["fasta_ref"],
+	#output:
+		#config["output_path"],	
+	#params:
+		#splits=30000,
+
+	#threads: workflow.cores * config["cores_per"] 
+
+	#shell:
+		#"""
+			#bash SplitGVCF.v3.sh {params.splits} {input.bed} {input.id_list} {input.vcf_folder} {output} {threads} {input.ref}	
+		#"""
