@@ -1,0 +1,1 @@
+java -jar /home/hubner/Trimmomatic-0.36/trimmomatic-0.36.jar PE -threads 16 $1.R1.fastq.gz $1.R2.fastq.gz $1.R1.paired.fq.gz $1.R1.unpaired.fq.gz $1.R2.paired.fq.gz $1.R2.unpaired.fq.gz ILLUMINACLIP:/home/hubner/Trimmomatic-0.36/adapters/AllAdapt.fa:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:10 MINLEN:36

@@ -5,53 +5,94 @@ configfile: "config.json"
 
 # from snakemake.remote.S3 import RemoteProvider as S3RemoteProvider
 # S3 = S3RemoteProvider(access_key_id="", secret_access_key="")
-
 #TODO add resources 
+
 def split_f(string):
-	return '/'.join(map(str,string.split('/')[-2:]))[:-9];
+	return '/'.join(map(str,string.split('/')[-2:]))[:-16];
 
-files=glob.glob("{}/*/*.fastq.gz".format(config["folder"]))
-files=list(map(split_f,files))
+files=list(map(split_f,glob.glob("{}/*/*.fastq.gz".format(config["folder"]))))
 
-
+# very ugly but works
 rule all:
 	input:
-		expand("VCF/{files}.g.vcf",files=files)
+		expand("VCF/{files}.g.vcf",files=files[:5]),
 
-#TODO fix rule all input is acausally output
+#rule trim:
+#        input:
+#                R1=expand("{folder}/{{samples}}/{{file}}_R1_001.fastq.gz",folder = config["folder"]),
+#                R2=expand("{folder}/{{samples}}/{{file}}_R2_001.fastq.gz",folder = config["folder"]),
+#        output:
+#                R1="trimmed/{samples}/{file}_R1_001.fastq.gz",
+#                R2="trimmed/{samples}/{file}_R2_001.fastq.gz",
+#        threads: 
+#                workflow.cores * config["cores_per"] 
+#        message: 
+#                "trimming {wildcards.samples}/{wildcards.file}"
+#        shell:
+#                """
+#                        fastp --detect_adapter_for_pe --overrepresentation_analysis --correction -i {input.R1} -I {input.R2} -o {output.R1} -O {output.R2}
+#                """
 
-rule trim:
+rule trim_test:
 	input:
-		expand("{folder}/{{samples}}/{{file}}.fastq.gz",folder = config["folder"]),
+		R1=expand("{folder}/{{samples}}/{{file}}_R1_001.fastq.gz",folder = config["folder"]),
+		R2=expand("{folder}/{{samples}}/{{file}}_R2_001.fastq.gz",folder = config["folder"]),
 	output:
-		"trimmed/{samples}/{file}.fastq.gz"
+		R1="trimmed/{samples}/{file}_R1_001.fastq.gz",
+		R2="trimmed/{samples}/{file}_R2_001.fastq.gz",
+	params:
+		trimmomatic="/home/hubner/Trimmomatic-0.36/trimmomatic-0.36.jar",
+		adapters="/home/hubner/Trimmomatic-0.36/adapters/AllAdapt.fa:2:30:10",
+		leadin=3,
+		trailing=3,
+		slidingwindow="4:10",
+		minlen=36,
 	threads: 
 		workflow.cores * config["cores_per"] 
 	message: 
 		"trimming {wildcards.samples}/{wildcards.file}"
+	benchmark:
+		"benchmarks/trim/{samples}/{file}.tsv"
+	log:
+		"logs/trim/{samples}/{file}.log"
 	shell:
 		"""
-			fastp --detect_adapter_for_pe --overrepresentation_analysis -i {input} -o {output} 
+			java -jar {params.trimmomatic} PE\
+					-threads {threads}\
+					{input.R1} {input.R2}\
+					{output.R1} /dev/null\
+					{output.R2} /dev/null\
+					ILLUMINACLIP:{params.adapters}\
+					LEADIN:{params.leadin}\
+					TRAILING:{params.trailing}\
+					SLIDINGWINDOW:{params.slidingwindow}\
+					MINLEN:{params.minlen}\
+					> {log} 2>&1	
 		"""
 
-#fastp --detect_adapter_for_pe --overrepresentation_analysis --correction -i {input[0]} -I {input[1]} -o {output[0]} -O {output[1]}
+# check if file size is bigger
 
 rule map:
 	input:
-		files="trimmed/{samples}/{file}.fastq.gz",
+		R1="trimmed/{samples}/{file}_R1_001.fastq.gz",
+		R2="trimmed/{samples}/{file}_R2_001.fastq.gz",
 		fasta=config["fasta"],
 	output:
 		"mapping/{samples}/{file}.bam"
 	threads: 
 		workflow.cores * config["cores_per"] 
 	message: 
-		"mapping {wildcards.file}.fastq.gz to bam"
+		"mapping {wildcards.file} to bam"
+	benchmark:
+		"benchmarks/map/{samples}/{file}.tsv"
+	log:
+		"logs/map/{samples}/{file}.log"
 	shell:
 		"""
-			bwa mem -t {threads} -R "$(bash RG.sh {input.files})" {input.fasta} {input.files} | samtools sort -@ {threads} --reference {input.fasta} -o {output}
+			bwa mem -t {threads} -R "$(bash RG.sh {wildcards.file})" {input.fasta} {input.R1} {input.R2} |\
+			samtools sort -@ {threads} --reference {input.fasta} -o {output}\
+			> {log} 2>&1	
 		"""
-
-#TODO change to correct sample name in @RG -- done
 
 rule index:
 	input:
@@ -62,9 +103,14 @@ rule index:
 		workflow.cores * config["cores_per"] 
 	message: 
 		"indexing {wildcards.file}.bam"	
+	benchmark:
+		"benchmarks/index/{samples}/{file}.tsv"
+	log:
+		"logs/index/{samples}/{file}.log"
 	shell:
 		"""
-			samtools.0.1.19 index {input}
+			samtools.0.1.19 index {input}\
+			> {log} 2>&1
 		"""
 
 rule mark_duplicates:
@@ -80,10 +126,15 @@ rule mark_duplicates:
 		workflow.cores * config["cores_per"] 
 	message: 
 		"MarkDuplicates {wildcards.file}"
+	benchmark:
+		"benchmarks/mark_dup/{samples}/{file}.tsv"
+	log:
+		"logs/mark_dup/{samples}/{file}.log"
 	shell:
 		# java -Xmx50G -jar {params.gatk} MarkDuplicatesSpark --spark-master local[{threads}]  -I {params.bam} -O {output.bam} -M {output.txt} 
 		"""
-			java -Xmx50G -jar {params.gatk} MarkDuplicates -I {input.bam} -O {output.bam} -M {output.txt} -VALIDATION_STRINGENCY SILENT
+			java -Xmx50G -jar {params.gatk} MarkDuplicates -I {input.bam} -O {output.bam} -M {output.txt}\
+			> {log} 2>&1
 		"""
 
 rule haplotypecaller:
@@ -99,36 +150,65 @@ rule haplotypecaller:
 		workflow.cores * config["cores_per"] 
 	message:
 		"running HaplotypeCaller on {input.fasta}"
+	benchmark:
+		"benchmarks/haplotypecaller/{samples}/{file}.tsv"
+	log:
+		"logs/haplotypecaller/{samples}/{file}.log"
 	shell:
 		# java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
 		""" 
-			java -Xmx50G -jar {params.gatk} HaplotypeCaller -R {input.fasta} -I {input.MarkDup} -O {output} -ERC GVCF
+			java -Xmx50G -jar {params.gatk} HaplotypeCaller -R {input.fasta} -I {input.MarkDup} -L chr6H1-100 -O {output} -ERC GVCF\
+			> {log} 2>&1
 		"""
-#-L chr6H 
-# adjust the heterozygosity parameter  -- to ????? 
+#TODO:
+#1 	-L chr6H 
+#2 	 adjust the heterozygosity parameter  -- to ????? 
 
-#rule GenomicsDBImport:
-	#input:
-	#output:
-		#path="",
-		#name_map="",
-	#params:
-		#gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar"
-	#threads: 
-		#workflow.cores * config["cores_per"] 
-	##message: ""
-	#shell:
-		#""" 
-			#java -Xmx50G -jar {params.gatk} GenomicsDBImport --genomicsdb-workspace-path {output.path} --samples-name-map {output.name_map}
-		#"""
+rule sample_map:
+	input:
+		vcfs=expand("VCF/{{samples}}/{vcf}.g.vcf",vcf=files)
+	output:
+		map_vcf="VCF/{samples}/cohort.sample_map",
+	threads: 
+		workflow.cores * config["cores_per"] ,
+	message: 
+		"creating sample map"
+	shell:
+		""" 
+			echo {input} > {output}
+		"""
+
+
+rule GenomicsDBImport:
+	input:
+		map_vcf="VCF/{samples}/cohort.sample_map",
+	output:
+		path=directory("genomicsdb/{samples}/"),
+	params:
+		gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar",
+		batch_size=2000,
+	threads: 
+		workflow.cores * config["cores_per"] ,
+	message: 
+		""
+	shell:
+		""" 
+			java -jar {params.gatk} --java-options "-Xmx4g -Xms4g" GenomicsDBImport \
+					--genomicsdb-workspace-path {output.path}\
+					--batch-size {params.batch_size} \
+					-L {} \
+					--sample-name-map {input.map_vcf}\
+					--tmp-dir={} \
+					--reader-threads {threads}
+		"""
+
+#java -Xmx50G -jar {params.gatk} -V 3GenomicsDBImport --genomicsdb-workspace-path {output.path} --samples-name-map {output.name_map}
 
 #rule GenotypeGVCFs:
 	#input:
-
-	#output:
-
-	#params:
-		#gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar"
+		#output:
+			#params:
+				#gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar"
 	#threads: 
 		#workflow.cores * config["cores_per"] 
 	#shell:
