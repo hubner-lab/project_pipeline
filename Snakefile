@@ -8,66 +8,35 @@ configfile: "config.json"
 #TODO add resources 
 
 def split_f(string):
-	return '/'.join(map(str,string.split('/')[-2:]))[:-16];
+	return '/'.join(map(str,string.split('/')[-2:]))[:-16]; # get the last 2 paths the remove the "_R{}_001.fastq.gz" ending  
 
 files=list(map(split_f,glob.glob("{}/*/*.fastq.gz".format(config["folder"]))))
 
 # very ugly but works
+
 rule all:
 	input:
 		expand("VCF/{files}.g.vcf",files=files[:5]),
 
-#rule trim:
-#        input:
-#                R1=expand("{folder}/{{samples}}/{{file}}_R1_001.fastq.gz",folder = config["folder"]),
-#                R2=expand("{folder}/{{samples}}/{{file}}_R2_001.fastq.gz",folder = config["folder"]),
-#        output:
-#                R1="trimmed/{samples}/{file}_R1_001.fastq.gz",
-#                R2="trimmed/{samples}/{file}_R2_001.fastq.gz",
-#        threads: 
-#                workflow.cores * config["cores_per"] 
-#        message: 
-#                "trimming {wildcards.samples}/{wildcards.file}"
-#        shell:
-#                """
-#                        fastp --detect_adapter_for_pe --overrepresentation_analysis --correction -i {input.R1} -I {input.R2} -o {output.R1} -O {output.R2}
-#                """
-
-rule trim_test:
-	input:
-		R1=expand("{folder}/{{samples}}/{{file}}_R1_001.fastq.gz",folder = config["folder"]),
-		R2=expand("{folder}/{{samples}}/{{file}}_R2_001.fastq.gz",folder = config["folder"]),
-	output:
-		R1="trimmed/{samples}/{file}_R1_001.fastq.gz",
-		R2="trimmed/{samples}/{file}_R2_001.fastq.gz",
-	params:
-		trimmomatic="/home/hubner/Trimmomatic-0.36/trimmomatic-0.36.jar",
-		adapters="/home/hubner/Trimmomatic-0.36/adapters/AllAdapt.fa:2:30:10",
-		leadin=3,
-		trailing=3,
-		slidingwindow="4:10",
-		minlen=36,
-	threads: 
-		workflow.cores * config["cores_per"] 
-	message: 
-		"trimming {wildcards.samples}/{wildcards.file}"
+rule trim:
+        input:
+                R1=expand("{folder}/{{samples}}/{{file}}_R1_001.fastq.gz",folder = config["folder"]),
+                R2=expand("{folder}/{{samples}}/{{file}}_R2_001.fastq.gz",folder = config["folder"]),
+        output:
+                R1="trimmed/{samples}/{file}_R1_001.fastq.gz",
+                R2="trimmed/{samples}/{file}_R2_001.fastq.gz",
+        threads: 
+                workflow.cores * config["cores_per"] 
+        message: 
+                "trimming {wildcards.samples}/{wildcards.file}",
 	benchmark:
-		"benchmarks/trim/{samples}/{file}.tsv"
+		"benchmarks/trim/{samples}/{file}.tsv",
 	log:
-		"logs/trim/{samples}/{file}.log"
+		"logs/trim/{samples}/{file}.log",
 	shell:
 		"""
-			java -jar {params.trimmomatic} PE\
-					-threads {threads}\
-					{input.R1} {input.R2}\
-					{output.R1} /dev/null\
-					{output.R2} /dev/null\
-					ILLUMINACLIP:{params.adapters}\
-					LEADIN:{params.leadin}\
-					TRAILING:{params.trailing}\
-					SLIDINGWINDOW:{params.slidingwindow}\
-					MINLEN:{params.minlen}\
-					> {log} 2>&1	
+		        fastp --detect_adapter_for_pe --overrepresentation_analysis --correction -i {input.R1} -I {input.R2} -o {output.R1} -O {output.R2} --json /dev/null --html /dev/null \
+			> {log} 2>&1	
 		"""
 
 # check if file size is bigger
@@ -133,7 +102,7 @@ rule mark_duplicates:
 	shell:
 		# java -Xmx50G -jar {params.gatk} MarkDuplicatesSpark --spark-master local[{threads}]  -I {params.bam} -O {output.bam} -M {output.txt} 
 		"""
-			java -Xmx50G -jar {params.gatk} MarkDuplicates -I {input.bam} -O {output.bam} -M {output.txt}\
+			java -jar {params.gatk} MarkDuplicates -I {input.bam} -O {output.bam} -M {output.txt} --VALIDATION_STRINGENCY LENIENT\
 			> {log} 2>&1
 		"""
 
@@ -157,7 +126,7 @@ rule haplotypecaller:
 	shell:
 		# java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
 		""" 
-			java -Xmx50G -jar {params.gatk} HaplotypeCaller -R {input.fasta} -I {input.MarkDup} -L chr6H1-100 -O {output} -ERC GVCF\
+			java -jar {params.gatk} HaplotypeCaller -R {input.fasta} -I {input.MarkDup} -O {output} -ERC GVCF\
 			> {log} 2>&1
 		"""
 #TODO:
@@ -234,3 +203,41 @@ rule GenomicsDBImport:
 		#"""
 			#bash SplitGVCF.v3.sh {params.splits} {input.bed} {input.id_list} {input.vcf_folder} {output} {threads} {input.ref}	
 		#"""
+#rule trim_test:
+	#input:
+		#R1=expand("{folder}/{{samples}}/{{file}}_R1_001.fastq.gz",folder = config["folder"]),
+		#R2=expand("{folder}/{{samples}}/{{file}}_R2_001.fastq.gz",folder = config["folder"]),
+	#output:
+		#R1="trimmed/{samples}/{file}_R1_001.fastq.gz",
+		#R2="trimmed/{samples}/{file}_R2_001.fastq.gz",
+	#params:
+		#trimmomatic="/home/hubner/Trimmomatic-0.36/trimmomatic-0.36.jar",
+		#adapters="/home/hubner/Trimmomatic-0.36/adapters/AllAdapt.fa:2:30:10",
+		#leadin=3,
+		#trailing=3,
+		#slidingwindow="4:10",
+		#minlen=36,
+	#threads: 
+		#workflow.cores * config["cores_per"] 
+	#message: 
+		#"trimming {wildcards.samples}/{wildcards.file}"
+	#benchmark:
+		#"benchmarks/trim/{samples}/{file}.tsv"
+	#log:
+		#"logs/trim/{samples}/{file}.log"
+	#shell:
+		#"""
+			#java -jar {params.trimmomatic} PE\
+					#-threads {threads}\
+					#{input.R1} {input.R2}\
+					#{output.R1} /dev/null\
+					#{output.R2} /dev/null\
+					#ILLUMINACLIP:{params.adapters}\
+					#LEADIN:{params.leadin}\
+					#TRAILING:{params.trailing}\
+					#SLIDINGWINDOW:{params.slidingwindow}\
+					#MINLEN:{params.minlen}\
+					#> {log} 2>&1	
+	       # """
+
+
