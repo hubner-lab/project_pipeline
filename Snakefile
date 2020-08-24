@@ -5,7 +5,7 @@ configfile: "config.json"
 
 # from snakemake.remote.S3 import RemoteProvider as S3RemoteProvider
 # S3 = S3RemoteProvider(access_key_id="", secret_access_key="")
-#TODO add resources 
+# TODO add resources 
 
 def split_f(string):
 	return '/'.join(map(str,string.split('/')[-2:]))[:-16]; # get the last 2 paths the remove the "_R{}_001.fastq.gz" ending  
@@ -112,7 +112,9 @@ rule haplotypecaller:
 		MarkDupIndex="mapping/{samples}/{file}.MarkedDup.bam.bai",
 		fasta=config["fasta"]
 	params:
-		gatk="/mnt/data/tools/gatk-4.1.0.0/gatk-package-4.1.0.0-local.jar"
+		gatk="/mnt/data/tools/gatk-4.1.0.0/gatk-package-4.1.0.0-local.jar",
+		samples=1000,
+		batch=10,
 	output:
 		"VCF/{samples}/{file}.g.vcf"
 	threads: 
@@ -126,12 +128,55 @@ rule haplotypecaller:
 	shell:
 		# java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
 		""" 
-			java -jar {params.gatk} HaplotypeCaller -R {input.fasta} -I {input.MarkDup} -O {output} -ERC GVCF\
-			> {log} 2>&1
+			source n_batch.sh
+			c=0
+			N={params.batch}
+
+			open_sem $N
+
+			chrs=($(samtools view -H {input.MarkDup} | grep -oP "(?<=SN:)([^\s]*)"))
+			for chr in "${{chrs[@]}}" 
+			do
+
+				len="$(samtools view -H {input.MarkDup} | grep "$chr" | grep -oP "(?<=LN:).*" )"
+				l_sample=$(( len / {params.samples} ))
+
+				f_break=0
+				current=1
+ 				for i in $(seq 1 {params.samples})
+				do 
+					next=$(( current + l_sample ))
+
+					if [[ "$next" -ge "$len" ]] 
+					then
+						next=$len	
+						f_break=1
+					fi
+					
+					run_with_lock java -jar {params.gatk} HaplotypeCaller\
+						-R {input.fasta}\
+						-I {input.MarkDup}\
+						-L "$chr:$current-$next"\
+						-O {output}."$chr.$current.$next" \
+						-ERC GVCF\
+						> /dev/null 2>&1
+
+					[[ "$f_break" -eq "1" ]] && break
+
+					current=$next
+
+				done
+			done
+
+
 		"""
 #TODO:
 #1 	-L chr6H 
 #2 	 adjust the heterozygosity parameter  -- to ????? 
+
+#c=$((c+1))
+#c=$((c%N))
+#[[ "$c" -eq "0" ]] && echo "waiting" && wait
 
 rule sample_map:
 	input:
@@ -239,5 +284,3 @@ rule GenomicsDBImport:
 					#MINLEN:{params.minlen}\
 					#> {log} 2>&1	
 	       # """
-
-
