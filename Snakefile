@@ -16,7 +16,7 @@ files=list(map(split_f,glob.glob("{}/*/*.fastq.gz".format(config["folder"]))))
 
 rule all:
 	input:
-		expand("VCF/{files}.g.vcf",files=files[:5]),
+		expand("VCF/{files}.g.vcf.list",files=files[:5]),
 
 rule trim:
         input:
@@ -105,40 +105,38 @@ rule mark_duplicates:
 			java -jar {params.gatk} MarkDuplicates -I {input.bam} -O {output.bam} -M {output.txt} --VALIDATION_STRINGENCY LENIENT\
 			> {log} 2>&1
 		"""
-
-rule haplotypecaller:
+# TODO: try the checkpoint feature
+rule haplotypecaller: 
 	input:
 		MarkDup="mapping/{samples}/{file}.MarkedDup.bam",
 		MarkDupIndex="mapping/{samples}/{file}.MarkedDup.bam.bai",
 		fasta=config["fasta"]
 	params:
 		gatk="/mnt/data/tools/gatk-4.1.0.0/gatk-package-4.1.0.0-local.jar",
-		samples=1000,
-		batch=10,
+		samples=config["splits"],
+		batch=config["batch_size"],
 	output:
-		"VCF/{samples}/{file}.g.vcf"
+		dynamic("VCF/{samples}/{file}.g.vcf.{split}"),
 	threads: 
 		workflow.cores * config["cores_per"] 
 	message:
 		"running HaplotypeCaller on {input.fasta}"
 	benchmark:
-		"benchmarks/haplotypecaller/{samples}/{file}.tsv"
+		"benchmarks/haplotypecaller/{samples}/{file}_{split}.tsv"
 	log:
-		"logs/haplotypecaller/{samples}/{file}.log"
+		"logs/haplotypecaller/{samples}/{file}_{split}.log"
 	shell:
-		# java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
+		# Unstable --  java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
 		""" 
 			source n_batch.sh
-			c=0
-			N={params.batch}
 
-			open_sem $N
+			open_sem {params.batch}
 
 			chrs=($(samtools view -H {input.MarkDup} | grep -oP "(?<=SN:)([^\s]*)"))
 			for chr in "${{chrs[@]}}" 
 			do
-
 				len="$(samtools view -H {input.MarkDup} | grep "$chr" | grep -oP "(?<=LN:).*" )"
+
 				l_sample=$(( len / {params.samples} ))
 
 				f_break=0
@@ -157,22 +155,37 @@ rule haplotypecaller:
 						-R {input.fasta}\
 						-I {input.MarkDup}\
 						-L "$chr:$current-$next"\
-						-O {output}."$chr.$current.$next" \
+						-O "VCF/{wildcards.samples}/{wildcards.file}.g.vcf.$chr.$current.$next" \
 						-ERC GVCF\
 						> /dev/null 2>&1
 
 					[[ "$f_break" -eq "1" ]] && break
 
 					current=$next
-
 				done
 			done
 
-
 		"""
-#TODO:
-#1 	-L chr6H 
-#2 	 adjust the heterozygosity parameter  -- to ????? 
+
+#def aggregate_haplotypecaller(wildcards):
+#    checkpoint_output = checkpoints.haplotypecaller.get(**wildcards).output[0]
+#    print(checkpoint_output)
+#    return file_names
+
+
+rule list_files:
+	input:
+		dynamic("VCF/{samples}/{file}.g.vcf.{split}"),
+	output:
+		"VCF/{samples}/{file}.g.vcf.list",
+	shell:
+		"""
+			echo {input} > {output}
+		"""
+	
+	
+#bcftools merge {output}* -g {input.fasta} -O v -o {output}  # bgzip all files
+
 
 #c=$((c+1))
 #c=$((c%N))
@@ -180,7 +193,7 @@ rule haplotypecaller:
 
 rule sample_map:
 	input:
-		vcfs=expand("VCF/{{samples}}/{vcf}.g.vcf",vcf=files)
+		vcfs=expand("VCF/{{samples}}/{vcf}.g.vcf.{{unknown}}",vcf=files)
 	output:
 		map_vcf="VCF/{samples}/cohort.sample_map",
 	threads: 

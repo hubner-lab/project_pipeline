@@ -2,5 +2,7 @@
 	"folder":"/mnt/data/Barley/FASTQ",
 	"samples":["1st30","April-2ndBatch","June-3rdBatch"],
 	"fasta":"/mnt/data/Barley/FullNewGenome-1Dec-2019/Barley_Morex_V2_pseudomolecules.fasta",
-	"cores_per":0.85
+	"cores_per":0.85,
+	"splits":1000,
+	"batch_size":20
 }
