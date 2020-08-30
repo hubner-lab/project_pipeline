@@ -3,20 +3,24 @@ import re
 
 configfile: "config.json"
 
+#onerror:
+#		shell(
+#onsuccess:
+#		shell(
+
 # from snakemake.remote.S3 import RemoteProvider as S3RemoteProvider
 # S3 = S3RemoteProvider(access_key_id="", secret_access_key="")
+
 # TODO add resources 
 
 def split_f(string):
-	return '/'.join(map(str,string.split('/')[-2:]))[:-16]; # get the last 2 paths the remove the "_R{}_001.fastq.gz" ending  
+	return '/'.join(map(str,string.split('/')[-2:]))[:-16]; # get the last 2 paths the remove the "_R{1|2}_001.fastq.gz" ending  
 
-files=list(map(split_f,glob.glob("{}/*/*.fastq.gz".format(config["folder"]))))
-
-# very ugly but works
+files=list(map(split_f,glob.glob("{}/*/*.fastq.gz".format(config["folder"])))) # very ugly but works
 
 rule all:
 	input:
-		expand("VCF/{files}.g.vcf.list",files=files[:5]),
+		expand("VCF/{files}.list",files=files[:5]),
 
 rule trim:
         input:
@@ -87,10 +91,10 @@ rule mark_duplicates:
 		bam="mapping/{samples}/{file}.bam",
 		index_bam="mapping/{samples}/{file}.bam.bai"
 	params:
-		gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar"
+		gatk="/mnt/data/Tools/gatk-4.1.2.0/gatk-package-4.1.2.0-local.jar",
 	output:
-		bam="mapping/{samples}/{file}.MarkedDup.bam",
-		txt="mapping/{samples}/{file}-marked_dup_metrics.txt"
+		bam=protected("mapping/{samples}/{file}.MarkedDup.bam"),
+		txt=protected("mapping/{samples}/{file}-marked_dup_metrics.txts"),
 	threads: 
 		workflow.cores * config["cores_per"] 
 	message: 
@@ -100,39 +104,47 @@ rule mark_duplicates:
 	log:
 		"logs/mark_dup/{samples}/{file}.log"
 	shell:
-		# java -Xmx50G -jar {params.gatk} MarkDuplicatesSpark --spark-master local[{threads}]  -I {params.bam} -O {output.bam} -M {output.txt} 
+		# java -jar {params.gatk} MarkDuplicates -I {input.bam} -O {output.bam} -M {output.txt} --VALIDATION_STRINGENCY LENIENT\
+		# > {log} 2>&1
+				#--spark-master local[{threads}]\
 		"""
-			java -jar {params.gatk} MarkDuplicates -I {input.bam} -O {output.bam} -M {output.txt} --VALIDATION_STRINGENCY LENIENT\
+			java -jar {params.gatk} MarkDuplicatesSpark\
+					-I {input.bam}\
+					-O {output.bam}\
+					-M {output.txt}\
+		 			--VALIDATION_STRINGENCY LENIENT\
 			> {log} 2>&1
 		"""
+
 # TODO: try the checkpoint feature
-rule haplotypecaller: 
+		# Unstable --  java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
+checkpoint haplotypecaller: 
 	input:
 		MarkDup="mapping/{samples}/{file}.MarkedDup.bam",
 		MarkDupIndex="mapping/{samples}/{file}.MarkedDup.bam.bai",
-		fasta=config["fasta"]
+		fasta=config["fasta"],	
+	output:
+		dynamic("VCF/{samples}/{file}.g.vcf.{split}",
 	params:
 		gatk="/mnt/data/tools/gatk-4.1.0.0/gatk-package-4.1.0.0-local.jar",
 		samples=config["splits"],
 		batch=config["batch_size"],
-	output:
-		dynamic("VCF/{samples}/{file}.g.vcf.{split}"),
 	threads: 
 		workflow.cores * config["cores_per"] 
 	message:
 		"running HaplotypeCaller on {input.fasta}"
 	benchmark:
 		"benchmarks/haplotypecaller/{samples}/{file}_{split}.tsv"
-	log:
-		"logs/haplotypecaller/{samples}/{file}_{split}.log"
 	shell:
-		# Unstable --  java -Xmx50G -jar {params.gatk} HaplotypeCallerSpark --spark-master local[{threads}] --tmp-dir tmp  -R {params.fasta} -I {input.MarkDup} -L chr6H -O {output} -ERC GVCF
 		""" 
 			source n_batch.sh
 
-			open_sem {params.batch}
+			N=$(( {threads} ))
+			echo $N
+			open_sem $N
 
 			chrs=($(samtools view -H {input.MarkDup} | grep -oP "(?<=SN:)([^\s]*)"))
+
 			for chr in "${{chrs[@]}}" 
 			do
 				len="$(samtools view -H {input.MarkDup} | grep "$chr" | grep -oP "(?<=LN:).*" )"
@@ -141,7 +153,7 @@ rule haplotypecaller:
 
 				f_break=0
 				current=1
- 				for i in $(seq 1 {params.samples})
+ 				while true 
 				do 
 					next=$(( current + l_sample ))
 
@@ -151,60 +163,45 @@ rule haplotypecaller:
 						f_break=1
 					fi
 					
-					run_with_lock java -jar {params.gatk} HaplotypeCaller\
+					if [[ ! -f "VCF/{wildcards.samples}/{wildcards.file}.g.vcf.$chr.$current.$next" ]]
+					then
+						run_with_lock java -jar {params.gatk} HaplotypeCaller\*/
 						-R {input.fasta}\
 						-I {input.MarkDup}\
 						-L "$chr:$current-$next"\
 						-O "VCF/{wildcards.samples}/{wildcards.file}.g.vcf.$chr.$current.$next" \
 						-ERC GVCF\
 						> /dev/null 2>&1
+					fi
 
 					[[ "$f_break" -eq "1" ]] && break
 
 					current=$next
 				done
 			done
-
 		"""
 
-#def aggregate_haplotypecaller(wildcards):
-#    checkpoint_output = checkpoints.haplotypecaller.get(**wildcards).output[0]
-#    print(checkpoint_output)
-#    return file_names
-
+#/*def list_files_input(wildcards):*/
+#    /*checkpoint_output = checkpoints.haplotypecaller.get(**wildcards).output[0]*/
 
 rule list_files:
 	input:
-		dynamic("VCF/{samples}/{file}.g.vcf.{split}"),
+		list_files_input
 	output:
-		"VCF/{samples}/{file}.g.vcf.list",
+		"VCF/{samples}/{file}.list",
+	threads: 
+		workflow.cores * config["cores_per"] ,
 	shell:
 		"""
 			echo {input} > {output}
 		"""
-	
-	
-#bcftools merge {output}* -g {input.fasta} -O v -o {output}  # bgzip all files
 
+
+#bcftools merge {output}* -g {input.fasta} -O v -o {output}  # bgzip all files
 
 #c=$((c+1))
 #c=$((c%N))
 #[[ "$c" -eq "0" ]] && echo "waiting" && wait
-
-rule sample_map:
-	input:
-		vcfs=expand("VCF/{{samples}}/{vcf}.g.vcf.{{unknown}}",vcf=files)
-	output:
-		map_vcf="VCF/{samples}/cohort.sample_map",
-	threads: 
-		workflow.cores * config["cores_per"] ,
-	message: 
-		"creating sample map"
-	shell:
-		""" 
-			echo {input} > {output}
-		"""
-
 
 rule GenomicsDBImport:
 	input:
@@ -296,4 +293,9 @@ rule GenomicsDBImport:
 					#SLIDINGWINDOW:{params.slidingwindow}\
 					#MINLEN:{params.minlen}\
 					#> {log} 2>&1	
-	       # """
+	       #
+	       #def aggregate_haplotypecaller(wildcards):
+#    checkpoint_output = checkpoints.haplotypecaller.get(**wildcards).output[0]
+#    print(checkpoint_output)
+#    return file_names
+#"""
