@@ -3,7 +3,7 @@
 /*params.variants   = "$baseDir/data/known_variants.vcf.gz"*/
 /*params.denylist   = "$baseDir/data/denylist.bed" */
 /*params.reads      = "$baseDir/data/reads/rep1_{1,2}.fq.gz"*/
-params.reads = "input/*_R{1,2}_001.fastq.gz"
+/*params.reads = "input/*_R{1,2}_001.fastq.gz"*/
 
 params.threads = 100
 
